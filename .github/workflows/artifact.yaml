@@ -284,10 +284,28 @@ jobs:
           apt-get update
           apt-get install -y python${{ matrix.python.version }}-dev python${{ matrix.python.version }}-venv gcc libc6-dev
         run: |
-          python${{ matrix.python.version }} -m venv venv
-          venv/bin/pip install -U pip wheel
-          venv/bin/pip install -r test/requirements.txt
-          venv/bin/pip install orjson --no-index --find-links dist/ --force-reinstall
+          # The QEMU-emulated CPython here sporadically SIGSEGVs inside the venv
+          # creation / pip download-install steps, i.e. before orjson is ever
+          # imported, which aborts the job before pytest starts. Retry just that
+          # bootstrap up to 3 times; the pytest invocation stays outside the loop
+          # so a genuine test failure still fails the job. This shell is dash and
+          # `set -e` is suspended inside an `if` condition, hence the `&&` chain.
+          bootstrap_attempt=0
+          bootstrap_ok=0
+          while [ "$bootstrap_attempt" -lt 3 ]; do
+            bootstrap_attempt=$((bootstrap_attempt + 1))
+            echo "venv/pip bootstrap attempt ${bootstrap_attempt} of 3"
+            rm -rf venv
+            if python${{ matrix.python.version }} -m venv venv \
+              && venv/bin/pip install -U pip wheel \
+              && venv/bin/pip install -r test/requirements.txt \
+              && venv/bin/pip install orjson --no-index --find-links dist/ --force-reinstall; then
+              bootstrap_ok=1
+              break
+            fi
+            echo "venv/pip bootstrap attempt ${bootstrap_attempt} failed"
+          done
+          [ "$bootstrap_ok" -eq 1 ] || { echo "venv/pip bootstrap failed after 3 attempts"; exit 1; }
           venv/bin/python -m pytest -s -rxX -v -n 2 test
 
     - name: Store wheels
