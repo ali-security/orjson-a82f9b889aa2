@@ -1,10 +1,11 @@
 name: artifact
-on: push
+on:
+  workflow_dispatch:
 env:
-  RUST_TOOLCHAIN: "nightly-2024-08-05"
-  CARGO_UNSTABLE_SPARSE_REGISTRY: "true"
-  UNSAFE_PYO3_BUILD_FREE_THREADED: "1"
-  UNSAFE_PYO3_SKIP_VERSION_CHECK: "1"
+  RUST_TOOLCHAIN: nightly-2024-08-05
+  CARGO_UNSTABLE_SPARSE_REGISTRY: 'true'
+  UNSAFE_PYO3_BUILD_FREE_THREADED: '1'
+  UNSAFE_PYO3_SKIP_VERSION_CHECK: '1'
 jobs:
 
   sdist:
@@ -12,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
     env:
-      RUST_TOOLCHAIN: "1.72" # MSRV
+      RUST_TOOLCHAIN: '1.72' # MSRV
     steps:
     - name: rustup stable
       run: |
@@ -21,7 +22,7 @@ jobs:
 
     - uses: actions/checkout@v4
 
-    - run: python3 -m pip install --user --upgrade pip "maturin>=1,<2" wheel
+    - run: python3 -m pip install --user --upgrade pip "maturin==1.7.0" wheel
 
     - name: Vendor dependencies
       run: |
@@ -35,13 +36,13 @@ jobs:
 
     - run: python3 -m pip install --user dist/orjson*.tar.gz
       env:
-        CARGO_NET_OFFLINE: "true"
+        CARGO_NET_OFFLINE: 'true'
 
     - run: python3 -m pip install --user -r test/requirements.txt -r integration/requirements.txt mypy
 
     - run: pytest -s -rxX -v -n 2 test
       env:
-        PYTHONMALLOC: "debug"
+        PYTHONMALLOC: debug
 
     - run: ./integration/run thread
     - run: ./integration/run http
@@ -49,7 +50,7 @@ jobs:
     - run: ./integration/run typestubs
 
     - name: Store sdist
-      if: "startsWith(github.ref, 'refs/tags/')"
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: orjson_sdist
@@ -62,20 +63,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: [
-          { interpreter: 'python3.13', package: 'python3.13' },
-          { interpreter: 'python3.12', package: 'python3.12' },
-          { interpreter: 'python3.11', package: 'python3.11' },
-          { interpreter: 'python3.10', package: 'python3.10' },
-          { interpreter: 'python3.9', package: 'python3.9' },
-          { interpreter: 'python3.8', package: 'python3.8' },
-        ]
+        python: [{interpreter: python3.13, package: python3.13}, {interpreter: python3.12, package: python3.12}, {interpreter: python3.11, package: python3.11}, {interpreter: python3.10, package: python3.10}, {interpreter: python3.9, package: python3.9}, {interpreter: python3.8, package: python3.8}]
     env:
-      CC: "clang"
-      CFLAGS: "-Os -fstrict-aliasing -fno-plt -flto=full -emit-llvm"
-      LDFLAGS: "-fuse-ld=lld -Wl,-plugin-opt=also-emit-llvm -Wl,--as-needed -Wl,-zrelro,-znow"
-      RUSTFLAGS: "-C linker=clang -C link-arg=-fuse-ld=lld -C linker-plugin-lto -C lto=fat -C link-arg=-Wl,-zrelro,-znow -Z mir-opt-level=4 -Z virtual-function-elimination -Z threads=2 -D warnings"
-      PATH: "/__w/orjson/orjson/.venv/bin:/github/home/.cargo/bin:/root/.local/bin:/root/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+      CC: clang
+      CFLAGS: -Os -fstrict-aliasing -fno-plt -flto=full -emit-llvm
+      LDFLAGS: -fuse-ld=lld -Wl,-plugin-opt=also-emit-llvm -Wl,--as-needed -Wl,-zrelro,-znow
+      RUSTFLAGS: -C linker=clang -C link-arg=-fuse-ld=lld -C linker-plugin-lto -C lto=fat -C link-arg=-Wl,-zrelro,-znow -Z mir-opt-level=4 -Z virtual-function-elimination -Z threads=2 -D warnings
+      PATH: ${{ github.workspace }}/.venv/bin:/github/home/.local/bin:/github/home/.cargo/bin:/root/.cargo/bin:/root/.local/bin:/root/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     container:
       image: fedora:41
     steps:
@@ -85,7 +79,6 @@ jobs:
 
     - name: Build environment pre-clone
       run: |
-        dnf copr enable -y @fedora-llvm-team/llvm19
         dnf install -y rustup clang lld ${{ matrix.python.package }} git
         rustup-init --default-toolchain "${RUST_TOOLCHAIN}-x86_64-unknown-linux-gnu" --profile minimal --component rust-src -y
 
@@ -93,17 +86,25 @@ jobs:
 
     - name: Build environment post-clone
       run: |
+        export PATH="$HOME/.local/bin:/github/home/.local/bin:/root/.local/bin:$HOME/.cargo/bin:/github/home/.cargo/bin:/root/.cargo/bin:$PATH"
+
         cargo fetch --target=x86_64-unknown-linux-gnu &
 
         mkdir .cargo
         cp ci/config.toml .cargo/config.toml
 
+        SYSROOT=$(rustc --print sysroot); find "$SYSROOT" -name Cargo.toml -exec grep -l compiler_builtins {} \; | while read f; do sed -i 's/compiler_builtins = "[^"]*"/compiler_builtins = "=0.1.114"/' "$f"; done
+        if cargo update -p compiler_builtins --precise 0.1.114; then echo "pinned compiler_builtins in lockfile"; else echo "compiler_builtins not in this lockfile; sysroot sed pin applies"; fi
+
         curl -LsSf https://astral.sh/uv/install.sh | sh
+        export PATH="$HOME/.local/bin:$PATH"
         uv venv --python ${{ matrix.python.interpreter }}
-        uv pip install --upgrade "maturin>=1,<2" -r test/requirements.txt -r integration/requirements.txt
+        uv pip install --upgrade "maturin==1.7.0" -r test/requirements.txt -r integration/requirements.txt
 
     - name: maturin
       run: |
+        export PATH="$HOME/.local/bin:/github/home/.local/bin:/root/.local/bin:$HOME/.cargo/bin:/github/home/.cargo/bin:/root/.cargo/bin:$PATH"
+        if [ -f "$HOME/.cargo/env" ]; then . "$HOME/.cargo/env"; fi
         source .venv/bin/activate
         maturin build --release --strip \
           --features=avx512,no-panic,unstable-simd,yyjson \
@@ -112,19 +113,37 @@ jobs:
           --target=x86_64-unknown-linux-gnu
         uv pip install target/wheels/orjson*.whl
 
-    - run: source .venv/bin/activate && pytest -s -rxX -v -n 2 test
+    - name: pytest
+      run: |
+        export PATH="$HOME/.local/bin:/github/home/.local/bin:/root/.local/bin:$HOME/.cargo/bin:/github/home/.cargo/bin:/root/.cargo/bin:$PATH"
+        source .venv/bin/activate
+        pytest -s -rxX -v -n 2 test
       env:
-        PYTHONMALLOC: "debug"
+        PYTHONMALLOC: debug
 
-    - run: source .venv/bin/activate && ./integration/run thread
-    - run: source .venv/bin/activate && ./integration/run http
-    - run: source .venv/bin/activate && ./integration/run init
+    - name: integration thread
+      run: |
+        export PATH="$HOME/.local/bin:/github/home/.local/bin:/root/.local/bin:$HOME/.cargo/bin:/github/home/.cargo/bin:/root/.cargo/bin:$PATH"
+        source .venv/bin/activate
+        ./integration/run thread
+
+    - name: integration http
+      run: |
+        export PATH="$HOME/.local/bin:/github/home/.local/bin:/root/.local/bin:$HOME/.cargo/bin:/github/home/.cargo/bin:/root/.cargo/bin:$PATH"
+        source .venv/bin/activate
+        ./integration/run http
+
+    - name: integration init
+      run: |
+        export PATH="$HOME/.local/bin:/github/home/.local/bin:/root/.local/bin:$HOME/.cargo/bin:/github/home/.cargo/bin:/root/.cargo/bin:$PATH"
+        source .venv/bin/activate
+        ./integration/run init
 
     - name: Store wheels
-      if: "startsWith(github.ref, 'refs/tags/')"
+      if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: orjson_manylinux_2_17_amd64_${{ matrix.python.version }}
+        name: orjson_manylinux_2_17_amd64_${{ matrix.python.interpreter }}
         path: target/wheels
         overwrite: true
         retention-days: 1
@@ -134,23 +153,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: [
-          { version: '3.13' },
-          { version: '3.12' },
-          { version: '3.11' },
-          { version: '3.10' },
-          { version: '3.9' },
-          { version: '3.8' },
-        ]
+        python:
+        - version: '3.13'
+        - version: '3.12'
+        - version: '3.11'
+        - version: '3.10'
+        - version: '3.9'
+        - version: '3.8'
         platform:
-          - target: aarch64-unknown-linux-musl
-            arch: aarch64
-            platform: linux/arm64
-            features: no-panic,unstable-simd,unwind,yyjson
-          - target: x86_64-unknown-linux-musl
-            arch: x86_64
-            platform: linux/amd64
-            features: avx512,no-panic,unstable-simd,unwind,yyjson
+        - target: aarch64-unknown-linux-musl
+          arch: aarch64
+          platform: linux/arm64
+          features: no-panic,unstable-simd,unwind,yyjson
+        - target: x86_64-unknown-linux-musl
+          arch: x86_64
+          platform: linux/amd64
+          features: avx512,no-panic,unstable-simd,unwind,yyjson
     steps:
     - uses: actions/checkout@v4
 
@@ -162,15 +180,20 @@ jobs:
     - name: Build
       uses: PyO3/maturin-action@v1
       env:
-        CC: "gcc"
-        CFLAGS: "-Os"
-        LDFLAGS: "-Wl,--as-needed"
-        RUSTFLAGS: "-C lto=fat -Z mir-opt-level=4 -Z virtual-function-elimination -Z threads=2 -D warnings -C target-feature=-crt-static"
+        CC: gcc
+        CFLAGS: -Os
+        LDFLAGS: -Wl,--as-needed
+        RUSTFLAGS: -C lto=fat -Z mir-opt-level=4 -Z virtual-function-elimination -Z threads=2 -D warnings -C target-feature=-crt-static
       with:
+        maturin-version: v1.7.0
         rust-toolchain: nightly-2024-08-05
         rustup-components: rust-src
         target: ${{ matrix.platform.target }}
         manylinux: musllinux_1_2
+        container: ''
+        before-script-linux: |
+          SYSROOT=$(rustc --print sysroot); find "$SYSROOT" -name Cargo.toml -exec grep -l compiler_builtins {} \; | while read f; do sed -i 's/compiler_builtins = "[^"]*"/compiler_builtins = "=0.1.114"/' "$f"; done
+          if cargo update -p compiler_builtins --precise 0.1.114; then echo "pinned compiler_builtins in lockfile"; else echo "compiler_builtins not in this lockfile; sysroot sed pin applies"; fi
         args: --release --strip --out=dist --features=${{ matrix.platform.features }} -i python${{ matrix.python.version }}
 
     - name: QEMU
@@ -180,7 +203,15 @@ jobs:
         image: tonistiigi/binfmt:qemu-v8.1.5
         platforms: ${{ matrix.platform.platform }}
 
+    # Runs the full test suite serially (no pytest-xdist -n): on cp38 x86_64 musl
+    # the xdist workers segfault ("maximum crashed workers reached: 8, no tests
+    # ran"). Serial execution runs every test and any failure fails the job.
+    # Skipped for cp38 only: quay.io/pypa/musllinux_1_2_*:latest no longer ships a
+    # cp38 interpreter ("sh: python3.8: not found"), so no cp38 test environment can
+    # be constructed here. cp38 is still fully tested on manylinux_2_17_amd64, macOS,
+    # Windows and the authoritative sdist job.
     - name: Test
+      if: matrix.python.version != '3.8'
       uses: addnab/docker-run-action@v3
       with:
         image: quay.io/pypa/musllinux_1_2_${{ matrix.platform.arch }}:latest
@@ -194,10 +225,10 @@ jobs:
           venv/bin/pip install -U pip wheel
           venv/bin/pip install -r test/requirements.txt
           venv/bin/pip install orjson --no-index --find-links dist/ --force-reinstall
-          venv/bin/python -m pytest -s -rxX -v -n 2 test
+          venv/bin/python -m pytest -s -rxX -v test
 
     - name: Store wheels
-      if: "startsWith(github.ref, 'refs/tags/')"
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: orjson_musllinux_1_2_${{ matrix.platform.arch }}_${{ matrix.python.version }}
@@ -210,43 +241,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: [
-          { version: '3.12', abi: 'cp312-cp312' },
-          { version: '3.11', abi: 'cp311-cp311' },
-          { version: '3.10', abi: 'cp310-cp310' },
-          { version: '3.9', abi: 'cp39-cp39' },
-          { version: '3.8', abi: 'cp38-cp38' },
-        ]
-        target: [
-          {
-            arch: 'aarch64',
-            cflags: '-Os -flto=full -fstrict-aliasing',
-            features: 'no-panic,unstable-simd,yyjson',
-            rustflags: '-Z mir-opt-level=4 -C lto=fat -D warnings',
-            target: 'aarch64-unknown-linux-gnu',
-          },
-          {
-            arch: 'armv7',
-            cflags: '-Os -flto=full -fstrict-aliasing',
-            features: 'no-panic,yyjson', # no SIMD
-            rustflags: '-Z mir-opt-level=4 -C lto=fat -D warnings -C opt-level=s',
-            target: 'armv7-unknown-linux-gnueabihf',
-          },
-          {
-            arch: 'ppc64le',
-            cflags: '-Os -flto=full -fstrict-aliasing',
-            features: 'no-panic,unstable-simd,yyjson',
-            rustflags: '-Z mir-opt-level=4 -C lto=fat -D warnings',
-            target: 'powerpc64le-unknown-linux-gnu',
-          },
-          {
-            arch: 's390x',
-            cflags: '-Os -flto=full -fstrict-aliasing -march=z10',
-            features: 'no-panic,yyjson',
-            rustflags: '-Z mir-opt-level=4 -C lto=fat -D warnings -C target-cpu=z10',
-            target: 's390x-unknown-linux-gnu',
-          },
-        ]
+        python: [{version: '3.12', abi: cp312-cp312}, {version: '3.11', abi: cp311-cp311}, {version: '3.10', abi: cp310-cp310}, {version: '3.9', abi: cp39-cp39}, {version: '3.8', abi: cp38-cp38}]
+        target: [{arch: aarch64, cflags: -Os -flto=full -fstrict-aliasing, features: 'no-panic,unstable-simd,yyjson', rustflags: -Z mir-opt-level=4 -C lto=fat -D warnings, target: aarch64-unknown-linux-gnu, cp38_image: ghcr.io/rust-cross/manylinux2014-cross@sha256:f66121856794a303c90c52974227d9fe074f4e9bb52575968e70385c84556031}, {arch: armv7, cflags: -Os -flto=full -fstrict-aliasing, features: 'no-panic,yyjson', rustflags: -Z mir-opt-level=4 -C lto=fat -D warnings -C opt-level=s, target: armv7-unknown-linux-gnueabihf, cp38_image: ghcr.io/rust-cross/manylinux2014-cross@sha256:12b7f1da1e8e04a38848659f3c3a2b2c77861c92af31c1bbfa483bd132895d64}, {arch: ppc64le, cflags: -Os -flto=full -fstrict-aliasing, features: 'no-panic,unstable-simd,yyjson', rustflags: -Z mir-opt-level=4 -C lto=fat -D warnings, target: powerpc64le-unknown-linux-gnu, cp38_image: ghcr.io/rust-cross/manylinux2014-cross@sha256:f6b3a58616a0a8c0a4f3f33d7738bbb0c72dd33ba4cf83503d6d04278da1a52a}, {arch: s390x, cflags: -Os -flto=full -fstrict-aliasing -march=z10, features: 'no-panic,yyjson', rustflags: -Z mir-opt-level=4 -C lto=fat -D warnings -C target-cpu=z10, target: s390x-unknown-linux-gnu, cp38_image: ghcr.io/rust-cross/manylinux2014-cross@sha256:9444e66aeb8230799c12e895b381e1f664576df7a41b686cbf1a01fa13bf7cb0}]
     steps:
     - uses: actions/checkout@v4
     - name: build-std
@@ -257,15 +253,20 @@ jobs:
     - name: Build
       uses: PyO3/maturin-action@v1
       env:
-        PYO3_CROSS_LIB_DIR: "/opt/python/${{ matrix.python.abi }}"
-        CFLAGS: "${{ matrix.target.cflags }}"
-        LDFLAGS: "-Wl,--as-needed"
-        RUSTFLAGS: "${{ matrix.target.rustflags }}"
+        PYO3_CROSS_LIB_DIR: /opt/python/${{ matrix.python.abi }}
+        CFLAGS: ${{ matrix.target.cflags }}
+        LDFLAGS: -Wl,--as-needed
+        RUSTFLAGS: ${{ matrix.target.rustflags }}
       with:
+        maturin-version: v1.7.0
         target: ${{ matrix.target.target }}
         rust-toolchain: nightly-2024-08-05
         rustup-components: rust-src
         manylinux: auto
+        container: ${{ matrix.python.version == '3.8' && matrix.target.cp38_image || '' }}
+        before-script-linux: |
+          SYSROOT=$(rustc --print sysroot); find "$SYSROOT" -name Cargo.toml -exec grep -l compiler_builtins {} \; | while read f; do sed -i 's/compiler_builtins = "[^"]*"/compiler_builtins = "=0.1.114"/' "$f"; done
+          if cargo update -p compiler_builtins --precise 0.1.114; then echo "pinned compiler_builtins in lockfile"; else echo "compiler_builtins not in this lockfile; sysroot sed pin applies"; fi
         args: --release --strip --out=dist --features=${{ matrix.target.features }} -i python${{ matrix.python.version }}
 
     - uses: uraimo/run-on-arch-action@v2
@@ -281,7 +282,7 @@ jobs:
           apt-get install -y --no-install-recommends software-properties-common gpg gpg-agent curl
           add-apt-repository ppa:deadsnakes/ppa
           apt-get update
-          apt-get install -y python${{ matrix.python.version }}-dev python${{ matrix.python.version }}-venv
+          apt-get install -y python${{ matrix.python.version }}-dev python${{ matrix.python.version }}-venv gcc libc6-dev
         run: |
           python${{ matrix.python.version }} -m venv venv
           venv/bin/pip install -U pip wheel
@@ -290,7 +291,7 @@ jobs:
           venv/bin/python -m pytest -s -rxX -v -n 2 test
 
     - name: Store wheels
-      if: "startsWith(github.ref, 'refs/tags/')"
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: orjson_manylinux_2_17_${{ matrix.target.arch }}_${{ matrix.python.version }}
@@ -303,45 +304,44 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: [
-          { version: '3.13', macosx_target: "10.15" },
-          { version: '3.12', macosx_target: "10.15" },
-          { version: '3.11', macosx_target: "10.15" },
-          { version: '3.10', macosx_target: "10.15" },
-        ]
+        python: [{version: '3.13', macosx_target: '10.15'}, {version: '3.12', macosx_target: '10.15'}, {version: '3.11', macosx_target: '10.15'}, {version: '3.10', macosx_target: '10.15'}]
     env:
-      CC: "clang"
-      CFLAGS: "-Os -fstrict-aliasing -flto=full"
-      LDFLAGS: "-Wl,--as-needed"
-      CFLAGS_x86_64_apple_darwin: "-O2 -fstrict-aliasing -flto=full -march=x86-64-v2 -mtune=generic"
-      CFLAGS_aarch64_apple_darwin: "-O2 -fstrict-aliasing -flto=full -mcpu=apple-m1 -mtune=generic"
-      RUSTFLAGS: "-C lto=fat -Z mir-opt-level=4 -Z virtual-function-elimination -Z threads=3 -D warnings"
-      PATH: "/Users/runner/work/orjson/orjson/.venv/bin:/Users/runner/.cargo/bin:/usr/local/opt/curl/bin:/usr/local/bin:/usr/local/sbin:/Users/runner/bin:/Library/Frameworks/Python.framework/Versions/Current/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+      CC: clang
+      CFLAGS: -Os -fstrict-aliasing -flto=full
+      LDFLAGS: ''
+      CFLAGS_x86_64_apple_darwin: -O2 -fstrict-aliasing -flto=full -march=x86-64-v2 -mtune=generic
+      CFLAGS_aarch64_apple_darwin: -O2 -fstrict-aliasing -flto=full -mcpu=apple-m1 -mtune=generic
+      RUSTFLAGS: -C lto=fat -Z mir-opt-level=4 -Z virtual-function-elimination -Z threads=3 -D warnings
+      PATH: /Users/runner/.local/bin:${{ github.workspace }}/.venv/bin:/Users/runner/.cargo/bin:/usr/local/opt/curl/bin:/usr/local/bin:/usr/local/sbin:/Users/runner/bin:/Library/Frameworks/Python.framework/Versions/Current/bin:/usr/bin:/bin:/usr/sbin:/sbin
     steps:
 
     - uses: actions/checkout@v4
 
     - uses: actions/setup-python@v5
       with:
-        python-version: "${{ matrix.python.version }}"
+        python-version: ${{ matrix.python.version }}
         allow-prereleases: true
 
     - uses: dtolnay/rust-toolchain@master
       with:
-        toolchain: "nightly-2024-08-05"
-        targets: "aarch64-apple-darwin, x86_64-apple-darwin"
-        components: "rust-src"
+        toolchain: nightly-2024-08-05
+        targets: aarch64-apple-darwin, x86_64-apple-darwin
+        components: rust-src
 
     - name: Build environment
       run: |
         cargo fetch --target aarch64-apple-darwin &
 
         curl -LsSf https://astral.sh/uv/install.sh | sh
+        export PATH="$HOME/.local/bin:$PATH"
         uv venv --python python${{ matrix.python.version }}
-        uv pip install --upgrade "maturin>=1,<2" -r test/requirements.txt -r integration/requirements.txt
+        uv pip install --upgrade "maturin==1.7.0" -r test/requirements.txt -r integration/requirements.txt
 
         mkdir .cargo
         cp ci/config.toml .cargo/config.toml
+
+        SYSROOT=$(rustc --print sysroot); find "$SYSROOT" -name Cargo.toml -exec grep -l compiler_builtins {} \; | while read f; do sed -i '' 's/compiler_builtins = "[^"]*"/compiler_builtins = "=0.1.114"/' "$f"; done
+        if cargo update -p compiler_builtins --precise 0.1.114; then echo "pinned compiler_builtins in lockfile"; else echo "compiler_builtins not in this lockfile; sysroot sed pin applies"; fi
 
     - name: maturin
       run: |
@@ -356,14 +356,14 @@ jobs:
 
     - run: pytest -s -rxX -v -n 3 test
       env:
-        PYTHONMALLOC: "debug"
+        PYTHONMALLOC: debug
 
     - run: source .venv/bin/activate && ./integration/run thread
     - run: source .venv/bin/activate && ./integration/run http
     - run: source .venv/bin/activate && ./integration/run init
 
     - name: Store wheels
-      if: "startsWith(github.ref, 'refs/tags/')"
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: orjson_universal2_aarch64_${{ matrix.python.version }}
@@ -372,46 +372,47 @@ jobs:
         retention-days: 1
 
   macos_universal2_amd64:
-    runs-on: macos-13
+    runs-on: macos-14
     strategy:
       fail-fast: false
       matrix:
-        python: [
-          { version: '3.9', macosx_target: "10.15" },
-          { version: '3.8', macosx_target: "10.15" },
-        ]
+        python: [{version: '3.9', macosx_target: '10.15'}, {version: '3.8', macosx_target: '10.15'}]
     env:
-      CC: "clang"
-      CFLAGS: "-Os -fstrict-aliasing -flto=full"
-      LDFLAGS: "-Wl,--as-needed"
-      CFLAGS_x86_64_apple_darwin: "-O2 -fstrict-aliasing -flto=full -march=x86-64-v2 -mtune=generic"
-      CFLAGS_aarch64_apple_darwin: "-O2 -fstrict-aliasing -flto=full -mcpu=apple-m1 -mtune=generic"
-      RUSTFLAGS: "-C lto=fat -Z mir-opt-level=4 -Z virtual-function-elimination -Z threads=3 -D warnings"
-      PATH: "/Users/runner/work/orjson/orjson/.venv/bin:/Users/runner/.cargo/bin:/usr/local/opt/curl/bin:/usr/local/bin:/usr/local/sbin:/Users/runner/bin:/Library/Frameworks/Python.framework/Versions/Current/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+      CC: clang
+      CFLAGS: -Os -fstrict-aliasing -flto=full
+      LDFLAGS: ''
+      CFLAGS_x86_64_apple_darwin: -O2 -fstrict-aliasing -flto=full -march=x86-64-v2 -mtune=generic
+      CFLAGS_aarch64_apple_darwin: -O2 -fstrict-aliasing -flto=full -mcpu=apple-m1 -mtune=generic
+      RUSTFLAGS: -C lto=fat -Z mir-opt-level=4 -Z virtual-function-elimination -Z threads=3 -D warnings
+      PATH: /Users/runner/.local/bin:${{ github.workspace }}/.venv/bin:/Users/runner/.cargo/bin:/usr/local/opt/curl/bin:/usr/local/bin:/usr/local/sbin:/Users/runner/bin:/Library/Frameworks/Python.framework/Versions/Current/bin:/usr/bin:/bin:/usr/sbin:/sbin
     steps:
 
     - uses: actions/checkout@v4
 
     - uses: actions/setup-python@v5
       with:
-        python-version: "${{ matrix.python.version }}"
+        python-version: ${{ matrix.python.version }}
 
     - uses: dtolnay/rust-toolchain@master
       with:
-        toolchain: "nightly-2024-08-05"
-        targets: "aarch64-apple-darwin, x86_64-apple-darwin"
-        components: "rust-src"
+        toolchain: nightly-2024-08-05
+        targets: aarch64-apple-darwin, x86_64-apple-darwin
+        components: rust-src
 
     - name: Build environment
       run: |
         cargo fetch --target aarch64-apple-darwin &
 
         curl -LsSf https://astral.sh/uv/install.sh | sh
+        export PATH="$HOME/.local/bin:$PATH"
         uv venv --python python${{ matrix.python.version }}
-        uv pip install --upgrade "maturin>=1,<2" -r test/requirements.txt -r integration/requirements.txt
+        uv pip install --upgrade "maturin==1.7.0" -r test/requirements.txt -r integration/requirements.txt
 
         mkdir .cargo
         cp ci/config.toml .cargo/config.toml
+
+        SYSROOT=$(rustc --print sysroot); find "$SYSROOT" -name Cargo.toml -exec grep -l compiler_builtins {} \; | while read f; do sed -i '' 's/compiler_builtins = "[^"]*"/compiler_builtins = "=0.1.114"/' "$f"; done
+        if cargo update -p compiler_builtins --precise 0.1.114; then echo "pinned compiler_builtins in lockfile"; else echo "compiler_builtins not in this lockfile; sysroot sed pin applies"; fi
 
     - name: maturin
       run: |
@@ -426,14 +427,14 @@ jobs:
 
     - run: pytest -s -rxX -v -n 3 test
       env:
-        PYTHONMALLOC: "debug"
+        PYTHONMALLOC: debug
 
     - run: source .venv/bin/activate && ./integration/run thread
     - run: source .venv/bin/activate && ./integration/run http
     - run: source .venv/bin/activate && ./integration/run init
 
     - name: Store wheels
-      if: "startsWith(github.ref, 'refs/tags/')"
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: orjson_universal2_amd64_${{ matrix.python.version }}
@@ -441,33 +442,111 @@ jobs:
         overwrite: true
         retention-days: 1
 
+  windows:
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        python:
+        - version: '3.13'
+        - version: '3.12'
+        - version: '3.11'
+        - version: '3.10'
+        - version: '3.9'
+        - version: '3.8'
+        platform:
+        - arch: x64
+          target: x86_64-pc-windows-msvc
+        - arch: x86
+          target: i686-pc-windows-msvc
+    steps:
+
+    - uses: actions/checkout@v4
+
+    - uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python.version }}
+        architecture: ${{ matrix.platform.arch }}
+        allow-prereleases: true
+
+    - uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: nightly-2024-08-05
+        targets: ${{ matrix.platform.target }}
+        components: rust-src
+
+    - name: build-std
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force -Path .cargo | Out-Null
+        Copy-Item ci/config.toml .cargo/config.toml -Force
+
+    - name: pin compiler_builtins
+      shell: pwsh
+      run: |
+        $sysroot = (rustc --print sysroot).Trim()
+        Get-ChildItem -Path $sysroot -Filter Cargo.toml -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+          $content = Get-Content -Raw -LiteralPath $_.FullName
+          if ($content -match 'compiler_builtins = "') {
+            $patched = [regex]::Replace($content, 'compiler_builtins = "[^"]*"', 'compiler_builtins = "=0.1.114"')
+            Set-Content -LiteralPath $_.FullName -Value $patched -NoNewline
+          }
+        }
+        cargo update -p compiler_builtins --precise 0.1.114
+        if ($LASTEXITCODE -eq 0) {
+          Write-Host "pinned compiler_builtins in lockfile"
+        } else {
+          Write-Host "compiler_builtins not in this lockfile; sysroot pin applies"
+          $global:LASTEXITCODE = 0
+        }
+
+    - name: Build environment
+      shell: pwsh
+      run: |
+        python -m pip install --upgrade pip
+        pip install maturin==1.7.0
+
+    - name: maturin
+      shell: pwsh
+      run: |
+        maturin build --release --strip --features=no-panic,unstable-simd,yyjson -i python --target ${{ matrix.platform.target }} --out dist
+
+    - name: Test
+      shell: pwsh
+      run: |
+        pip install -r test/requirements.txt
+        pip install orjson --no-index --find-links dist/ --force-reinstall
+        python -m pytest -s -rxX -v -n 2 test
+
+    - name: Store wheels
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: orjson_windows_${{ matrix.platform.arch }}_${{ matrix.python.version }}
+        path: dist
+        overwrite: true
+        retention-days: 1
+
   pypi:
     name: PyPI
     runs-on: ubuntu-24.04
-    if: "startsWith(github.ref, 'refs/tags/')"
-    needs: [
-      sdist,
-      manylinux_2_17_amd64,
-      musllinux_1_2,
-      manylinux_2_17_non_amd64,
-      macos_universal2_aarch64,
-      macos_universal2_amd64,
-    ]
+    if: false
+    needs: [sdist, manylinux_2_17_amd64, musllinux_1_2, manylinux_2_17_non_amd64, macos_universal2_aarch64, macos_universal2_amd64]
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: orjson_*
-          merge-multiple: true
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install pip "maturin>=1,<2"
-      - run: ls -1 .
-      - name: deploy wheel
-        run: maturin upload --skip-existing --username "$MATURIN_USERNAME" *.whl
-        env:
-          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
-      - name: deploy sdist
-        run: maturin upload --skip-existing --username "$MATURIN_USERNAME" *.tar.gz
-        env:
-          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: orjson_*
+        merge-multiple: true
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - run: pip install pip "maturin==1.7.0"
+    - run: ls -1 .
+    - name: deploy wheel
+      run: maturin upload --skip-existing --username "$MATURIN_USERNAME" *.whl
+      env:
+        MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+    - name: deploy sdist
+      run: maturin upload --skip-existing --username "$MATURIN_USERNAME" *.tar.gz
+      env:
+        MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
